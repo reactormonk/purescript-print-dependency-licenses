@@ -11,8 +11,11 @@ You can edit this file as you like.
     , "debug"
     , "effect"
     , "kishimen"
+    , "node-child-process"
     , "node-fs"
     , "node-process"
+    , "parsing"
+    , "psci-support"
     , "simple-json"
     ]
 , packages =
