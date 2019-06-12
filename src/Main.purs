@@ -3,13 +3,13 @@ module Main where
 import Prelude
 
 import Control.Alt ((<|>))
-import Data.Array (some)
+import Data.Array (catMaybes, some)
 import Data.Array as A
 import Data.Either (Either(..), either)
 import Data.Foldable (intercalate, maximum)
 import Data.Function.Uncurried (Fn3, runFn3)
 import Data.Generic.Rep (class Generic)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Newtype (class Newtype, unwrap)
 import Data.String as S
 import Data.String.CodeUnits (fromCharArray)
@@ -33,7 +33,8 @@ import Node.FS.Sync as FS
 import Node.Process (exit)
 import Simple.JSON (class ReadForeign, E, read, readImpl, readJSON)
 import Text.Parsing.Parser (Parser, runParser)
-import Text.Parsing.Parser.String (satisfy, skipSpaces)
+import Text.Parsing.Parser.Combinators (skipMany)
+import Text.Parsing.Parser.String (satisfy, skipSpaces, string)
 
 explodeIfLeft :: forall a. ReadForeign a => E a -> Aff a
 explodeIfLeft x = liftEffect $ case x of
@@ -87,20 +88,24 @@ isSpago = exists "spago.dhall"
 spagoCrawler :: Effect (Array UnifiedResult)
 spagoCrawler =
   do
-    transB <- ChildProcess.execSync "spago list-packages -f transitive" ChildProcess.defaultExecSyncOptions
-    trans <- Buffer.toString UTF8 transB
-    directB <- ChildProcess.execSync "spago list-packages -f direct" ChildProcess.defaultExecSyncOptions
-    direct <- Buffer.toString UTF8 directB
-    t <- either (throw <<< show) pure $ runParser trans spagoFormatParser
-    d <- either (throw <<< show) pure $ runParser direct spagoFormatParser
+    let
+      parseSpago cmd = do
+        buffer <- ChildProcess.execSync "spago list-packages -f transitive" ChildProcess.defaultExecSyncOptions
+        res <- Buffer.toString UTF8 buffer
+        either (throw <<< show) pure $ runParser res spagoFormatParser
+    t <- parseSpago "spago list-packages -f transitive"
+    d <- parseSpago "spago list-packages -f direct"
     let
       spagoResults = t <> d
       getLicense :: _ -> _ { license :: String }
       getLicense r = fileAsJSON ("./.spago/" <> r.name <> "/" <> r.version <> "/bower.json")
-      toUnifiedResult r = do
-        l <- getLicense r
-        pure { depName: r.name , depType: "spago" , depLicenses: l.license }
-    traverse toUnifiedResult spagoResults
+      toUnifiedResult r =
+        if r.version == "local" then
+          pure Nothing
+        else do
+          l <- getLicense r
+          pure $ Just { depName: r.name , depType: "spago" , depLicenses: l.license }
+    catMaybes <$> traverse toUnifiedResult spagoResults
 
 
 fileAsJSON :: forall m r. ReadForeign r => MonadEffect m => String -> m r
@@ -112,7 +117,12 @@ fileAsJSON path = do
     (readJSON fileContent)
 
 spagoFormatParser :: Parser String (Array SpagoResult)
-spagoFormatParser =
+spagoFormatParser = do
+  skipMany $ do
+    _ <- string "WARNING"
+    _ <- parseStringUntil '\n'
+    skipSpaces
+    pure unit
   some $ do
     name <- parseStringUntil ' '
     skipSpaces
